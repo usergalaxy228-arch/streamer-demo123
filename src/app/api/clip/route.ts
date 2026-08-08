@@ -14,7 +14,15 @@ import { NextResponse } from "next/server";
 
 import { analyzeChat } from "@/lib/analyzer";
 import { generateMockChat } from "@/lib/mock-chat";
-import type { Clip, ClipRequest, ClipResponse, ClipError } from "@/lib/types";
+import { createClient } from "@/lib/supabase/server";
+import { isSupabaseConfigured } from "@/lib/supabase/config";
+import {
+  clipToInsert,
+  type Clip,
+  type ClipRequest,
+  type ClipResponse,
+  type ClipError,
+} from "@/lib/types";
 
 const SOURCE_DURATION = 300; // seconds of mock stream
 
@@ -67,11 +75,34 @@ export async function POST(
     filename: `clipify-highlight-${i + 1}.mp4`,
   }));
 
+  // --- Persist metadata for the logged-in user (best-effort) ---
+  // If Supabase isn't configured or nobody is logged in, we still return the
+  // clips — they just aren't saved to history.
+  let saved = false;
+  if (isSupabaseConfigured) {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (user && clips.length > 0) {
+      const rows = clips.map((c) => clipToInsert(c, user.id, url));
+      const { error } = await supabase.from("clips").insert(rows);
+      if (error) {
+        // Don't fail the request just because persistence failed.
+        console.error("Failed to save clips:", error.message);
+      } else {
+        saved = true;
+      }
+    }
+  }
+
   const response: ClipResponse = {
     source: {
       url,
       durationSeconds: SOURCE_DURATION,
       messagesAnalyzed: chat.length,
+      saved,
     },
     clips,
   };

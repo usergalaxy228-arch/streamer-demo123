@@ -32,6 +32,8 @@ export interface ClipResponse {
     durationSeconds: number;
     /** Total mock chat messages analyzed. */
     messagesAnalyzed: number;
+    /** Whether the clips were persisted to the user's history. */
+    saved: boolean;
   };
   clips: Clip[];
 }
@@ -39,4 +41,26 @@ export interface ClipResponse {
 /** Error response shape. */
 export interface ClipError {
   error: string;
+}
+
+/** A row in the Supabase `clips` table. */
+export interface DbClip {
+  id: string;
+  user_id: string;
+  original_stream_url: string;
+  start_time: number;
+  end_time: number;
+  file_url: string | null;
+  created_at: string;
+}
+
+/** Map a generated {@link Clip} to a `clips` insert payload for a given user. */
+export function clipToInsert(clip: Clip, userId: string, sourceUrl: string) {
+  return {
+    user_id: userId,
+    original_stream_url: sourceUrl,
+    start_time: clip.start,
+    end_time: clip.end,
+    file_url: clip.downloadUrl,
+  };
 }

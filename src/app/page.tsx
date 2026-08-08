@@ -1,10 +1,15 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import type { User } from "@supabase/supabase-js";
 
 import ClipGallery from "@/components/ClipGallery";
+import ClipHistory from "@/components/ClipHistory";
 import LoadingSteps, { PROCESSING_STEPS } from "@/components/LoadingSteps";
-import type { Clip, ClipResponse, ClipError } from "@/lib/types";
+import { createClient } from "@/lib/supabase/client";
+import { isSupabaseConfigured } from "@/lib/supabase/config";
+import type { Clip, ClipResponse, ClipError, DbClip } from "@/lib/types";
 
 type Status = "idle" | "loading" | "done" | "error";
 
@@ -16,7 +21,51 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [source, setSource] = useState<ClipResponse["source"] | null>(null);
 
+  // Auth + saved-clip history.
+  const [user, setUser] = useState<User | null>(null);
+  const [history, setHistory] = useState<DbClip[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
   const stepTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  /** Load the current user's saved clips from Supabase. */
+  const loadHistory = useCallback(async () => {
+    if (!isSupabaseConfigured) return;
+    setHistoryLoading(true);
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("clips")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (!error && data) setHistory(data as DbClip[]);
+    setHistoryLoading(false);
+  }, []);
+
+  // Track auth state and (re)load history when the user changes.
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    const supabase = createClient();
+
+    supabase.auth.getUser().then(({ data }) => {
+      setUser(data.user);
+      if (data.user) loadHistory();
+    });
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      if (session?.user) loadHistory();
+      else setHistory([]);
+    });
+
+    return () => sub.subscription.unsubscribe();
+  }, [loadHistory]);
+
+  async function handleSignOut() {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    setUser(null);
+    setHistory([]);
+  }
 
   function clearStepTimers() {
     stepTimers.current.forEach(clearTimeout);
@@ -61,6 +110,8 @@ export default function Home() {
       setClips(data.clips);
       setSource(data.source);
       setStatus("done");
+      // If the clips were persisted, refresh the saved-clips history.
+      if (data.source.saved) loadHistory();
     } catch (err) {
       clearStepTimers();
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -73,7 +124,36 @@ export default function Home() {
       {/* Ambient gradient backdrop */}
       <div className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(60%_50%_at_50%_0%,rgba(139,92,246,0.18),transparent_70%)]" />
 
-      <div className="mx-auto max-w-6xl px-6 py-16 sm:py-24">
+      {/* Top nav with auth state */}
+      <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
+        <span className="text-sm font-semibold tracking-tight">Clipify</span>
+        {isSupabaseConfigured ? (
+          user ? (
+            <div className="flex items-center gap-3 text-sm">
+              <span className="hidden text-zinc-400 sm:inline">
+                {user.email}
+              </span>
+              <button
+                onClick={handleSignOut}
+                className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 font-medium text-white transition hover:bg-white/10"
+              >
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <Link
+              href="/login"
+              className="rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-violet-500"
+            >
+              Log in
+            </Link>
+          )
+        ) : (
+          <span className="text-xs text-zinc-500">Supabase not configured</span>
+        )}
+      </header>
+
+      <div className="mx-auto max-w-6xl px-6 pb-16 pt-8 sm:pb-24 sm:pt-12">
         {/* Hero */}
         <section className="mx-auto max-w-2xl text-center">
           <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-violet-300">
@@ -138,9 +218,42 @@ export default function Home() {
                 )}
               </div>
               <ClipGallery clips={clips} />
+              {source && !source.saved && (
+                <p className="text-center text-xs text-zinc-500">
+                  {isSupabaseConfigured ? (
+                    <>
+                      <Link
+                        href="/login"
+                        className="text-violet-400 hover:underline"
+                      >
+                        Log in
+                      </Link>{" "}
+                      to save these clips to your history.
+                    </>
+                  ) : (
+                    "Configure Supabase to save clips to your history."
+                  )}
+                </p>
+              )}
             </div>
           )}
         </section>
+
+        {/* Saved clips history (logged-in users only) */}
+        {isSupabaseConfigured && user && (
+          <section className="mt-20 border-t border-white/10 pt-12">
+            <div className="mb-6 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Your saved clips</h2>
+              <button
+                onClick={loadHistory}
+                className="text-xs text-zinc-400 hover:text-white"
+              >
+                Refresh
+              </button>
+            </div>
+            <ClipHistory clips={history} loading={historyLoading} />
+          </section>
+        )}
       </div>
     </main>
   );
